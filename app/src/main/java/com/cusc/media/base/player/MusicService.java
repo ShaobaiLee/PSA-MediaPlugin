@@ -53,10 +53,19 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
     // 用于生成唯一的mediaId（默认值避免桌面读取时为 null）
     private String currentMediaId = "0";
 
+    private static final String PREFS_NAME = "MusicServicePrefs";
+    private static final String PREF_KEY_TITLE = "last_title";
+    private static final String PREF_KEY_ARTIST = "last_artist";
+    private static final String PREF_KEY_DURATION = "last_duration";
+    private static final String PREF_KEY_ALBUM_ART = "last_album_art";
+
     @Override
     public void onCreate() {
         super.onCreate();
         Log.d(TAG, "onCreate");
+
+        // 步骤0：恢复上次播放的元数据
+        restoreLastMediaInfo();
 
         // 步骤1：初始化MediaSession
         mediaSession = new MediaSessionCompat(this, TAG);
@@ -179,6 +188,31 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
         }
     }
 
+    private void restoreLastMediaInfo() {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        latestTitle = prefs.getString(PREF_KEY_TITLE, "默认歌曲");
+        latestArtist = prefs.getString(PREF_KEY_ARTIST, "默认歌手");
+        latestDuration = prefs.getLong(PREF_KEY_DURATION, 180000);
+        latestAlbumArtUri = prefs.getString(PREF_KEY_ALBUM_ART, null);
+        
+        // 恢复 currentMediaId，确保排重逻辑正常
+        String uniqueKey = latestTitle + latestArtist;
+        currentMediaId = String.valueOf(Math.abs(uniqueKey.hashCode()));
+        
+        Log.d(TAG, "Restored media info: " + latestTitle + " - " + latestArtist);
+    }
+
+    private void saveLastMediaInfo() {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        prefs.edit()
+                .putString(PREF_KEY_TITLE, latestTitle)
+                .putString(PREF_KEY_ARTIST, latestArtist)
+                .putLong(PREF_KEY_DURATION, latestDuration)
+                .putString(PREF_KEY_ALBUM_ART, latestAlbumArtUri)
+                .apply();
+        Log.d(TAG, "Saved media info to prefs");
+    }
+
     @Override
     public void onMediaInfoUpdated(String title, String artist, long duration, String albumArtUri) {
         Log.d(TAG, "Received latest media info: " + title + "-" + artist + ", duration: " + duration);
@@ -189,9 +223,10 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
         if (duration > 0) this.latestDuration = duration;
         this.latestAlbumArtUri = albumArtUri;
 
-        // 生成时间戳后6位作为mediaId
-        long timestamp = System.currentTimeMillis() % 1000000;
-        currentMediaId = String.valueOf(timestamp);
+        // 使用 title + artist 的哈希值作为 mediaId，保证同一首歌 ID 不变
+        // 避免因 ID 变化导致 UI 频繁刷新或专辑图重新加载
+        String uniqueKey = latestTitle + latestArtist;
+        currentMediaId = String.valueOf(Math.abs(uniqueKey.hashCode()));
 
         // 创建媒体项并更新队列
         MediaDescriptionCompat description = new MediaDescriptionCompat.Builder()
@@ -211,16 +246,20 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
 
         // 更新MediaSession元数据
         updateMediaMetadata();
+        
+        // 持久化保存
+        saveLastMediaInfo();
     }
 
     @Override
     public void onPlaybackStateChanged(android.media.session.PlaybackState state) {
         if (state == null) return;
         
-        // 直接透传状态、进度和速度
-        stateBuilder.setState(state.getState(), state.getPosition(), state.getPlaybackSpeed());
+        // 使用带 updateTime 的 setState 方法，确保进度条同步准确
+        // 直接透传原始 PlaybackState 的最后更新时间
+        stateBuilder.setState(state.getState(), state.getPosition(), state.getPlaybackSpeed(), state.getLastPositionUpdateTime());
         mediaSession.setPlaybackState(stateBuilder.build());
-        Log.d(TAG, "Sync playback state: state=" + state.getState() + ", pos=" + state.getPosition());
+        Log.d(TAG, "Sync playback state: state=" + state.getState() + ", pos=" + state.getPosition() + ", lastUpdateTime=" + state.getLastPositionUpdateTime());
     }
 
     @SuppressLint("ForegroundServiceType")
