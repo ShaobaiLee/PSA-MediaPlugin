@@ -122,7 +122,10 @@ public class MediaSessionListenerService extends NotificationListenerService {
                 }
                 if (bitmap != null) {
                     Log.d(TAG, "[" + currentPlayingPackage + "] URI is null, falling back to Bitmap");
-                    albumArtUri = saveBitmapToCache(bitmap, title, artist);
+                    // 用封面位图内容哈希命名，保证 URI 随封面内容变化：
+                    // 汽水音乐切歌时可能先推送"新标题+旧封面"，稍后再推送"新标题+正确封面"，
+                    // 内容寻址能让后一帧的正确封面得到不同 URI，从而不被 unchanged 跳过、能被下游刷新。
+                    albumArtUri = saveBitmapToCache(bitmap, computeBitmapHash(bitmap));
                 }
             }
 
@@ -152,13 +155,27 @@ public class MediaSessionListenerService extends NotificationListenerService {
     }
 
     /**
+     * 计算封面位图的内容签名：缩放到 16x16 后对像素做哈希。
+     * 开销很小，且与封面内容一一对应——相同封面得到相同签名，不同封面得到不同签名。
+     */
+    private static int computeBitmapHash(Bitmap bitmap) {
+        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, 16, 16, true);
+        int[] pixels = new int[16 * 16];
+        scaled.getPixels(pixels, 0, 16, 0, 0, 16, 16);
+        if (scaled != bitmap) {
+            scaled.recycle();
+        }
+        return Arrays.hashCode(pixels);
+    }
+
+    /**
      * 将 Bitmap 保存到应用缓存目录，返回 file:// URI 字符串。
+     * 文件名由封面内容哈希决定（内容寻址）：同名 ⇒ 同内容，因此"文件已存在则跳过写入"是安全且正确的；
+     * 不同封面必得不同文件名，从根本上消除"旧封面占用新歌文件名"的问题。
      * 实际的写盘和清理操作在后台线程执行，避免阻塞主线程。
      */
-    private String saveBitmapToCache(Bitmap bitmap, String title, String artist) {
-        String safeTitle = (title != null) ? title : "";
-        String safeArtist = (artist != null) ? artist : "";
-        String fileName = "album_art_" + Math.abs((safeTitle + safeArtist).hashCode()) + ".jpg";
+    private String saveBitmapToCache(Bitmap bitmap, int contentHash) {
+        String fileName = "album_art_" + Math.abs(contentHash) + ".jpg";
         File cacheFile = new File(getCacheDir(), fileName);
         String uri = cacheFile.toURI().toString();
 

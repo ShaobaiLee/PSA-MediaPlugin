@@ -61,6 +61,8 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
     private String lastPackageName = null;
     // 用于生成唯一的mediaId（默认值避免桌面读取时为 null）
     private String currentMediaId = "0";
+    // 上次已持久化的歌曲键（title+artist），用于判断是否为真正的切歌，避免同歌封面纠正时多余写盘
+    private String lastPersistedSongKey = null;
 
     private static final String PREFS_NAME = "MusicServicePrefs";
     private static final String PREF_KEY_TITLE = "last_title";
@@ -193,9 +195,11 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
         latestDuration = prefs.getLong(PREF_KEY_DURATION, 180000);
         latestAlbumArtUri = prefs.getString(PREF_KEY_ALBUM_ART, null);
         
-        // 恢复 currentMediaId，确保排重逻辑正常
-        String uniqueKey = latestTitle + latestArtist;
+        // 恢复 currentMediaId，计算方式需与 onMediaInfoUpdated 一致（纳入封面标识）
+        String artKey = (latestAlbumArtUri != null) ? latestAlbumArtUri : "";
+        String uniqueKey = latestTitle + latestArtist + artKey;
         currentMediaId = String.valueOf(Math.abs(uniqueKey.hashCode()));
+        lastPersistedSongKey = latestTitle + latestArtist;
         
         Log.d(TAG, "Restored media info: " + latestTitle + " - " + latestArtist);
     }
@@ -221,12 +225,19 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
         if (duration > 0) this.latestDuration = duration;
         this.latestAlbumArtUri = albumArtUri;
 
-        // 使用 title + artist 的哈希值作为 mediaId，保证同一首歌 ID 不变
-        // 避免因 ID 变化导致 UI 频繁刷新或专辑图重新加载
-        String uniqueKey = latestTitle + latestArtist;
+        // 使用 title + artist + 封面标识 的哈希值作为 mediaId。
+        // 纳入封面标识（file://album_art_<内容哈希>.jpg 或 content:// URI，均为稳定、不含端口的标识）：
+        // 当封面被纠正（同一首歌但封面 URI 变化）时 mediaId 随之改变，
+        // 才能让原厂桌面卡片的 isSameMedia(mediaId) 去重判为不同、从而刷新封面。
+        // 注意：不要用带随机端口的 http URL，避免服务重启导致 mediaId 抖动。
+        String artKey = (latestAlbumArtUri != null) ? latestAlbumArtUri : "";
+        String uniqueKey = latestTitle + latestArtist + artKey;
         String newMediaId = String.valueOf(Math.abs(uniqueKey.hashCode()));
-        boolean songChanged = !newMediaId.equals(currentMediaId);
         currentMediaId = newMediaId;
+
+        // 持久化判定仅看 title+artist 是否变化，避免同一首歌封面纠正时产生多余磁盘写入
+        String songKey = latestTitle + latestArtist;
+        boolean songMetaChanged = !songKey.equals(lastPersistedSongKey);
 
         // 如果是 file:// URI，转换为 HTTP URL 供 Launcher 读取
         String displayUri = mAlbumArtServer.getHttpUrl(latestAlbumArtUri);
@@ -251,7 +262,8 @@ public class MusicService extends MediaBrowserServiceCompat implements MediaInfo
         updateMediaMetadata();
         
         // 仅在歌曲切换时持久化，避免同一首歌的重复元数据回调触发多余磁盘写入
-        if (songChanged) {
+        if (songMetaChanged) {
+            lastPersistedSongKey = songKey;
             saveLastMediaInfo();
         }
     }
