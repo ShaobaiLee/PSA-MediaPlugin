@@ -11,7 +11,7 @@ android {
         minSdk = 28
         targetSdk = 34
         versionCode = 5000
-        versionName = "1.2"
+        versionName = "1.3"
         resConfigs("en")
     }
 
@@ -26,6 +26,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("release")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
